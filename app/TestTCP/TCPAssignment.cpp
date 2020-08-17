@@ -58,8 +58,8 @@ void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallPa
 		//this->syscall_write(syscallUUID, pid, param.param1_int, param.param2_ptr, param.param3_int);
 		break;
 	case CONNECT:
-		//this->syscall_connect(syscallUUID, pid, param.param1_int,
-		//		static_cast<struct sockaddr*>(param.param2_ptr), (socklen_t)param.param3_int);
+		this->syscall_connect(syscallUUID, pid, param.param1_int,
+				static_cast<struct sockaddr*>(param.param2_ptr), (socklen_t)param.param3_int);
 		break;
 	case LISTEN:
 		//this->syscall_listen(syscallUUID, pid, param.param1_int, param.param2_int);
@@ -80,9 +80,9 @@ void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallPa
 				static_cast<socklen_t*>(param.param3_ptr));
 		break;
 	case GETPEERNAME:
-		//this->syscall_getpeername(syscallUUID, pid, param.param1_int,
-		//		static_cast<struct sockaddr *>(param.param2_ptr),
-		//		static_cast<socklen_t*>(param.param3_ptr));
+		this->syscall_getpeername(syscallUUID, pid, param.param1_int,
+				static_cast<struct sockaddr *>(param.param2_ptr),
+				static_cast<socklen_t*>(param.param3_ptr));
 		break;
 	default:
 		assert(0);
@@ -137,6 +137,24 @@ int TCPAssignment::check_addr(struct sockaddr *addr)
 	}
 	
 	return 0;
+}
+
+uint16_t calc_checksum(Packet *packet)
+{
+	in_addr_t src_addr, dest_addr;
+
+	packet->readData(14 + 12, &src_addr, 4);
+	packet->readData(14 + 16, &dest_addr, 4);
+
+	size_t len = packet->getSize();
+	len -= 14 + 20;
+
+	uint8_t *seg = (uint8_t *) malloc(len);
+	packet->readData(14 + 20, seg, len);
+	uint16_t checksum = NetworkUtil::tcp_sum(src_addr, dest_addr, seg, len);
+	free(seg);
+
+	return checksum ^ 0xffff;
 }
 
 void TCPAssignment::syscall_socket(UUID syscallUUID, int pid, int domain, int type, int protocol)
@@ -213,9 +231,214 @@ void TCPAssignment::syscall_getsockname(UUID syscallUUID, int pid, int sockfd, s
 	returnSystemCall(syscallUUID, 0);
 }
 
+void TCPAssignment::allocate_header(Packet *packet, Header *header)
+{
+	uint16_t flags = 0;
+	flags |= header->fin << 0;
+	flags |= header->syn << 1;
+	flags |= header->rst << 2;
+	flags |= header->psh << 3;
+	flags |= header->ack << 4;
+	flags |= header->urg << 5;
+
+	flags = htons(flags);
+	uint32_t seq_num = htonl(header->seq_num);
+	uint32_t ack_num = htonl(header->ack_num);
+	uint16_t window = htons(header->window);
+	uint16_t checksum = htons(header->checksum);
+	uint16_t urgent = htons(header->urgent_pointer);
+
+	packet->writeData(14 + 12, &(header->src_addr), 4);
+	packet->writeData(14 + 16, &(header->dest_addr), 4);
+	packet->writeData(14 + 20, &(header->src_port), 2);
+	packet->writeData(14 + 20 + 2, &(header->dest_port), 2);
+	packet->writeData(14 + 20 + 4, &seq_num, 4);
+	packet->writeData(14 + 20 + 8, &ack_num, 4);
+	packet->writeData(14 + 20 + 12, &flags, 2);
+	packet->writeData(14 + 20 + 14, &window, 2);
+	packet->writeData(14 + 20 + 16, &checksum, 2);
+	packet->writeData(14 + 20 + 18, &urgent, 2);
+
+	checksum = htons(calc_checksum(packet));
+	packet->writeData(14 + 20 + 16, &checksum, 2);
+}
+
+void TCPAssignment::read_header(Packet *packet, Header *header)
+{
+	uint16_t flags, window, checksum, urgent;
+	uint32_t seq_num, ack_num;
+
+	packet->readData(14 + 12, &(header->src_addr), 4);
+	packet->readData(14 + 16, &(header->dest_addr), 4);
+	packet->readData(14 + 20, &(header->src_port), 2);
+	packet->readData(14 + 20 + 2, &(header->dest_port), 2);
+	packet->readData(14 + 20 + 4, &seq_num, 4);
+	packet->readData(14 + 20 + 8, &ack_num, 4);
+	packet->readData(14 + 20 + 12, &flags, 2);
+	packet->readData(14 + 20 + 14, &window, 2);
+	packet->readData(14 + 20 + 16, &checksum, 2);
+	packet->readData(14 + 20 + 18, &urgent, 2);
+
+	header->seq_num = ntohl(seq_num);
+	header->ack_num = ntohl(ack_num);
+
+	flags = ntohs(flags);
+	header->fin = flags & (1 << 0);
+	header->syn = flags & (1 << 1);
+	header->rst = flags & (1 << 2);
+	header->psh = flags & (1 << 3);
+	header->ack = flags & (1 << 4);
+	header->urg = flags & (1 << 5);
+
+	header->window = ntohs(window);
+	header->checksum = ntohs(checksum);
+	header->urgent_pointer = ntohs(urgent);
+}
+
+void TCPAssignment::syscall_connect(UUID syscallUUID, int pid, int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+{
+	Socket *socket = find_socket(pid, sockfd);
+
+	if (socket == NULL || socket->state != IDLE)
+	{
+		returnSystemCall(syscallUUID, -1);
+		return;
+	}
+
+	Packet* packet = allocatePacket(14 + 20 + 20);
+
+	Header* header = new Header();
+	header->dest_addr = ((struct sockaddr_in *) addr)->sin_addr.s_addr;
+	header->dest_port = ((struct sockaddr_in *) addr)->sin_port;
+	int port = getHost()->getRoutingTable((uint8_t *) &(header->dest_addr));
+	getHost()->getIPAddr((uint8_t *) &(header->src_addr), port);
+	header->src_port = (rand() % sizeof(in_port_t));
+	header->syn = 1;
+
+	allocate_header(packet, header);
+
+	in_addr_t test_addr;
+	in_port_t test_port;
+
+	packet->readData(14 + 16, &test_addr, 4);
+	packet->readData(14 + 20 + 2, &test_port, 2);
+
+	sendPacket("IPv4", packet);
+
+	struct sockaddr_in* new_sa = (struct sockaddr_in *) malloc(sizeof(struct sockaddr_in));
+	new_sa->sin_family = AF_INET;
+	new_sa->sin_addr.s_addr = header->src_addr;
+	new_sa->sin_port = header->src_port;
+	socket->sa = (struct sockaddr *) new_sa;
+	socket->dest_addr = header->dest_addr;
+	socket->dest_port = header->dest_port;
+	socket->state = SYN_SENT;
+	socket->syscallUUID = syscallUUID;
+	socket->src_seq = header->seq_num;
+
+	delete header;
+}
+
+void TCPAssignment::syscall_getpeername(UUID syscallUUID, int pid, int sockfd, struct sockaddr* addr, socklen_t* addrlen) {
+	Socket* socket = find_socket(pid, sockfd);
+
+	if (socket == NULL || socket->state <= SYN_SENT) {
+		returnSystemCall(syscallUUID, -1);
+		return;
+	}
+
+	((struct sockaddr_in *) addr)->sin_family = AF_INET;
+	((struct sockaddr_in *) addr)->sin_addr.s_addr = socket->dest_addr;
+	((struct sockaddr_in *) addr)->sin_port = socket->dest_port;
+	*addrlen = sizeof(struct sockaddr_in);
+
+	returnSystemCall(syscallUUID, 0);	
+}
+
+Socket* TCPAssignment::find_socket_addr(Header *header)
+{
+	Socket *socket = NULL;
+
+	in_addr_t dest_addr = header->dest_addr;
+	in_addr_t dest_port = header->dest_port;
+	
+	for (std::list<Socket*>::iterator it = socket_list.begin(); it != socket_list.end(); ++it)
+	{
+		if ((struct sockaddr_in *) ((*it)->sa) == NULL)
+			continue;
+
+		in_addr_t my_addr = ((struct sockaddr_in *) ((*it)->sa))->sin_addr.s_addr;
+		in_port_t my_port = ((struct sockaddr_in *) ((*it)->sa))->sin_port;
+
+		if ((my_addr == INADDR_ANY || dest_addr == INADDR_ANY || my_addr == dest_addr) && (my_port == dest_port))
+		{
+			socket = *it;
+			break;
+		}
+	}
+
+	return socket;
+}
+
 void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 {
+	Header *header = new Header();
+	read_header(packet, header);
 
+	Socket *socket = find_socket_addr(header);
+
+	if (socket == NULL)
+	{
+		freePacket(packet);
+		delete header;
+		return;
+	}
+
+	uint16_t checksum = calc_checksum(packet);
+	if (checksum != 0)
+	{
+		freePacket(packet);
+		delete header;
+		return;
+	}
+
+	switch (socket->state)
+	{
+		case SYN_SENT:
+		{
+			if (header->syn != 1 || header->ack != 1)
+				break;
+
+			if (header->ack_num != socket->src_seq + 1)
+				break;
+
+			returnSystemCall(socket->syscallUUID, 0);
+
+			Header *new_header = new Header();
+			new_header->src_addr = header->dest_addr;
+			new_header->src_port = header->dest_port;
+			new_header->dest_addr = header->src_addr;
+			new_header->dest_port = header->src_port;
+			new_header->seq_num = header->ack_num;
+			new_header->ack_num = header->seq_num + 1;
+			new_header->ack = 1;
+
+			Packet *new_packet = allocatePacket(14 + 20 + 20);
+			allocate_header(new_packet, new_header);
+			sendPacket("IPv4", new_packet);
+
+			socket->state = ESTAB;
+			socket->src_seq = new_header->seq_num;
+			socket->ack_num = new_header->ack_num;
+			socket->syscallUUID = NULL;
+
+			delete new_header;
+			break;
+		}
+	}	
+
+	freePacket(packet);
+	delete header;
 }
 
 void TCPAssignment::timerCallback(void* payload)

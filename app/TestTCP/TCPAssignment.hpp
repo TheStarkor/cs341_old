@@ -21,6 +21,8 @@
 
 #define IDLE 0
 #define BOUND 1
+#define SYN_SENT 2
+#define ESTAB 3
 
 namespace E
 {
@@ -32,7 +34,12 @@ public:
 	int pid;
 	int fd;
 	int state;
-	struct sockaddr *sa;
+	struct sockaddr *sa; // src_addr, arc_port
+	in_addr_t dest_addr;
+	in_port_t dest_port;
+	int dest_seq;
+	int src_seq;
+	int ack_num;
 
 	Socket(int _pid, int _fd)
 	{
@@ -40,7 +47,69 @@ public:
 		fd = _fd;
 		state = IDLE;
 		sa = NULL;
+		dest_addr = -1;
+		dest_port = -1;
+		dest_seq = -1;
+		src_seq = -1;
+		ack_num = -1;
 	};
+};
+
+/*
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |          Source Port          |       Destination Port        |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                        Sequence Number                        |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                    Acknowledgment Number                      |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |  Data |           |U|A|P|R|S|F|                               |
+   | Offset| Reserved  |R|C|S|S|Y|I|            Window             |
+   |       |           |G|K|H|T|N|N|                               |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |           Checksum            |         Urgent Pointer        |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                    Options                    |    Padding    |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                             data                              |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+*/
+
+class Header
+{
+public:
+	in_addr_t src_addr;
+	in_port_t src_port;
+	in_addr_t dest_addr;
+	in_port_t dest_port;
+	uint32_t seq_num;
+	uint32_t ack_num;
+	bool urg;
+	bool ack;
+	bool psh;
+	bool rst;
+	bool syn;
+	bool fin;
+	uint16_t window;
+	uint16_t checksum;
+	uint16_t urgent_pointer;
+
+	Header()
+	{
+		seq_num = rand() % sizeof(int);
+		ack_num = 0;
+		urg = 0;
+		ack = 0;
+		psh = 0;
+		rst = 0;
+		syn = 0;
+		fin = 0;
+		window = 0;
+		checksum = 0;
+		urgent_pointer = 0;
+	}
 };
 
 class TCPAssignment : public HostModule, public NetworkModule, public SystemCallInterface, private NetworkLog, private TimerModule
@@ -64,7 +133,12 @@ protected:
 	virtual void syscall_close(UUID syscallUUID, int pid, int sockfd);
 	virtual void syscall_bind(UUID syscallUUID, int pid, int sockfd, struct sockaddr *my_addr, socklen_t addrlen);
 	virtual void syscall_getsockname(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+	virtual void allocate_header(Packet *packet, Header *header);
+	virtual void read_header(Packet *packet, Header *header);
+	virtual void syscall_connect(UUID syscallUUID, int pid, int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+	virtual void syscall_getpeername(UUID syscallUUID, int pid, int sockfd, struct sockaddr* addr, socklen_t* addrlen);
 	virtual void systemCallback(UUID syscallUUID, int pid, const SystemCallParameter& param) final;
+	virtual Socket* find_socket_addr(Header *header);
 	virtual void packetArrived(std::string fromModule, Packet* packet) final;
 
 };
