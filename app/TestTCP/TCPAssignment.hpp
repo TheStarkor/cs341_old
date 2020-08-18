@@ -23,6 +23,8 @@
 #define BOUND 1
 #define SYN_SENT 2
 #define ESTAB 3
+#define LISTENING 4
+#define SYNRCVD 5
 
 namespace E
 {
@@ -40,6 +42,11 @@ public:
 	int dest_seq;
 	int src_seq;
 	int ack_num;
+	int backlog;
+	Socket *clone;
+
+	std::list<Socket*> backlog_list;
+	std::list<struct accept_elem*> accept_list;
 
 	Socket(int _pid, int _fd)
 	{
@@ -52,6 +59,8 @@ public:
 		dest_seq = -1;
 		src_seq = -1;
 		ack_num = -1;
+		backlog = -1;
+		clone = NULL;
 	};
 };
 
@@ -112,6 +121,14 @@ public:
 	}
 };
 
+struct accept_elem
+{
+	UUID syscallUUID;
+	int pid;
+	sockaddr *addr;
+	socklen_t *addrlen;
+};
+
 class TCPAssignment : public HostModule, public NetworkModule, public SystemCallInterface, private NetworkLog, private TimerModule
 {
 private:
@@ -129,6 +146,7 @@ protected:
 	virtual in_addr_t get_addr(struct sockaddr_in *sa);
 	virtual in_port_t get_port(struct sockaddr_in *sa);
 	virtual int check_addr(struct sockaddr *addr);
+	virtual int count_backlog(Socket *socket);
 	virtual void syscall_socket(UUID syscallUUID, int pid, int domain, int type, int protocol);
 	virtual void syscall_close(UUID syscallUUID, int pid, int sockfd);
 	virtual void syscall_bind(UUID syscallUUID, int pid, int sockfd, struct sockaddr *my_addr, socklen_t addrlen);
@@ -137,6 +155,9 @@ protected:
 	virtual void read_header(Packet *packet, Header *header);
 	virtual void syscall_connect(UUID syscallUUID, int pid, int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 	virtual void syscall_getpeername(UUID syscallUUID, int pid, int sockfd, struct sockaddr* addr, socklen_t* addrlen);
+	virtual void syscall_listen(UUID syscallUUID, int pid, int sockfd, int backlog);
+	virtual Socket* find_established(Socket *socket);
+	virtual void syscall_accept(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t *addrlen);
 	virtual void systemCallback(UUID syscallUUID, int pid, const SystemCallParameter& param) final;
 	virtual Socket* find_socket_addr(Header *header);
 	virtual void packetArrived(std::string fromModule, Packet* packet) final;

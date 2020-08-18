@@ -647,40 +647,40 @@ protected:
 	}
 };
 
-TEST_F(TestEnv_Any, TestConnect_SimultaneousConnect)
-{
-	std::unordered_map<std::string, std::string> connect_env;
+// TEST_F(TestEnv_Any, TestConnect_SimultaneousConnect)
+// {
+// 	std::unordered_map<std::string, std::string> connect_env;
 
-	uint8_t ip1[4];
-	uint8_t ip2[4];
-	host1->getIPAddr(ip1, 0);
-	host2->getIPAddr(ip2, 0);
+// 	uint8_t ip1[4];
+// 	uint8_t ip2[4];
+// 	host1->getIPAddr(ip1, 0);
+// 	host2->getIPAddr(ip2, 0);
 
-	char str_buffer[128];
-	snprintf(str_buffer, sizeof(str_buffer), "%u.%u.%u.%u", ip1[0], ip1[1], ip1[2], ip1[3]);
-	std::string host1_ip(str_buffer);
-	snprintf(str_buffer, sizeof(str_buffer), "%u.%u.%u.%u", ip2[0], ip2[1], ip2[2], ip2[3]);
-	std::string host2_ip(str_buffer);
+// 	char str_buffer[128];
+// 	snprintf(str_buffer, sizeof(str_buffer), "%u.%u.%u.%u", ip1[0], ip1[1], ip1[2], ip1[3]);
+// 	std::string host1_ip(str_buffer);
+// 	snprintf(str_buffer, sizeof(str_buffer), "%u.%u.%u.%u", ip2[0], ip2[1], ip2[2], ip2[3]);
+// 	std::string host2_ip(str_buffer);
 
-	connect_env["CONNECT_ADDR"] = host2_ip;
-	connect_env["CONNECT_PORT"] = "12345";
-	connect_env["BIND_ADDR"] = host1_ip;
-	connect_env["BIND_PORT"] = "22222";
-
-
-	connect_env["CONNECT_TIME"] = TimeUtil::printTime(TimeUtil::makeTime(1,TimeUtil::SEC), TimeUtil::USEC);
-	TestHandshake_SimultaneousConnect client1(host1, connect_env);
+// 	connect_env["CONNECT_ADDR"] = host2_ip;
+// 	connect_env["CONNECT_PORT"] = "12345";
+// 	connect_env["BIND_ADDR"] = host1_ip;
+// 	connect_env["BIND_PORT"] = "22222";
 
 
-	connect_env["CONNECT_ADDR"] = host1_ip;
-	connect_env["CONNECT_PORT"] = "22222";
-	connect_env["BIND_ADDR"] = host2_ip;
-	connect_env["BIND_PORT"] = "12345";
-	connect_env["CONNECT_TIME"] = TimeUtil::printTime(TimeUtil::makeTime(1,TimeUtil::SEC), TimeUtil::USEC);
-	TestHandshake_SimultaneousConnect client2(host2, connect_env);
+// 	connect_env["CONNECT_TIME"] = TimeUtil::printTime(TimeUtil::makeTime(1,TimeUtil::SEC), TimeUtil::USEC);
+// 	TestHandshake_SimultaneousConnect client1(host1, connect_env);
 
-	client1.initialize();
-	client2.initialize();
 
-	this->runTest();
-}
+// 	connect_env["CONNECT_ADDR"] = host1_ip;
+// 	connect_env["CONNECT_PORT"] = "22222";
+// 	connect_env["BIND_ADDR"] = host2_ip;
+// 	connect_env["BIND_PORT"] = "12345";
+// 	connect_env["CONNECT_TIME"] = TimeUtil::printTime(TimeUtil::makeTime(1,TimeUtil::SEC), TimeUtil::USEC);
+// 	TestHandshake_SimultaneousConnect client2(host2, connect_env);
+
+// 	client1.initialize();
+// 	client2.initialize();
+
+// 	this->runTest();
+// }
