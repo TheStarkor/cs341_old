@@ -18,6 +18,8 @@
 
 
 #include <E/E_TimerModule.hpp>
+#include <E/E_TimeUtil.hpp>
+
 
 #define IDLE 0
 #define BOUND 1
@@ -25,6 +27,12 @@
 #define ESTAB 3
 #define LISTENING 4
 #define SYNRCVD 5
+#define FIN_WAIT_1 6
+#define FIN_WAIT_2 7
+#define CLOSE_WAIT 8
+#define LAST_ACK 9
+#define TIMED_WAIT 10
+#define CLOSED 11
 
 namespace E
 {
@@ -129,6 +137,13 @@ struct accept_elem
 	socklen_t *addrlen;
 };
 
+struct timer_elem
+{
+	UUID timerUUID;
+	int state;
+	Socket *socket;
+};
+
 class TCPAssignment : public HostModule, public NetworkModule, public SystemCallInterface, private NetworkLog, private TimerModule
 {
 private:
@@ -148,6 +163,7 @@ protected:
 	virtual int check_addr(struct sockaddr *addr);
 	virtual int count_backlog(Socket *socket);
 	virtual void syscall_socket(UUID syscallUUID, int pid, int domain, int type, int protocol);
+	virtual void remove_socket(int pid, int sockfd);
 	virtual void syscall_close(UUID syscallUUID, int pid, int sockfd);
 	virtual void syscall_bind(UUID syscallUUID, int pid, int sockfd, struct sockaddr *my_addr, socklen_t addrlen);
 	virtual void syscall_getsockname(UUID syscallUUID, int pid, int sockfd, struct sockaddr *addr, socklen_t *addrlen);
@@ -161,7 +177,7 @@ protected:
 	virtual void systemCallback(UUID syscallUUID, int pid, const SystemCallParameter& param) final;
 	virtual Socket* find_socket_addr(Header *header);
 	virtual void packetArrived(std::string fromModule, Packet* packet) final;
-
+	virtual struct timer_elem* allocate_timer(int time, Socket *socket) final;
 };
 
 class TCPAssignmentProvider

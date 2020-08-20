@@ -17,6 +17,8 @@
 namespace E
 {
 std::list<Socket*> socket_list;
+std::list<Socket*> wait_list;
+std::list<timer_elem*> timer_list;
 
 TCPAssignment::TCPAssignment(Host* host) : HostModule("TCP", host),
 		NetworkModule(this->getHostModuleName(), host->getNetworkSystem()),
@@ -39,6 +41,7 @@ void TCPAssignment::initialize()
 void TCPAssignment::finalize()
 {
 	socket_list.clear();
+	wait_list.clear();
 }
 
 void TCPAssignment::systemCallback(UUID syscallUUID, int pid, const SystemCallParameter& param)
@@ -183,7 +186,7 @@ void TCPAssignment::syscall_socket(UUID syscallUUID, int pid, int domain, int ty
 	returnSystemCall(syscallUUID, fd);
 }
 
-void TCPAssignment::syscall_close(UUID syscallUUID, int pid, int sockfd)
+void TCPAssignment::remove_socket(int pid, int sockfd)
 {
 	for (std::list<Socket*>::iterator it = socket_list.begin(); it != socket_list.end(); ++it) {
 		if (pid == (*it)->pid && sockfd == (*it)->fd) 
@@ -191,12 +194,49 @@ void TCPAssignment::syscall_close(UUID syscallUUID, int pid, int sockfd)
 			free((*it)->sa);
 			socket_list.erase(it);
 			removeFileDescriptor(pid, sockfd);
-			returnSystemCall(syscallUUID, 0);
 			return;
 		}
 	}
+}
 
-	returnSystemCall(syscallUUID, -1);
+void TCPAssignment::syscall_close(UUID syscallUUID, int pid, int sockfd)
+{
+	Socket *socket = find_socket(pid, sockfd);
+	if (socket == NULL)
+	{
+		returnSystemCall(syscallUUID, -1);
+		return;
+	}
+
+	if (socket->state <= SYN_SENT)
+	{
+		remove_socket(pid, sockfd);
+		returnSystemCall(syscallUUID, 0);
+		return;
+	}
+
+	// ??? SYNRCVD
+	if (socket->state == ESTAB)
+		socket->state = FIN_WAIT_1;
+	else if (socket->state == CLOSE_WAIT)
+		socket->state = LAST_ACK;
+
+	Header *header = new Header();
+	header->dest_addr = socket->dest_addr;
+	header->dest_port = socket->dest_port;
+	header->src_addr = ((struct sockaddr_in *) socket->sa)->sin_addr.s_addr;
+	header->src_port = ((struct sockaddr_in *) socket->sa)->sin_port;
+	header->seq_num = socket->src_seq;
+	header->fin = 1;
+
+	Packet *new_packet = allocatePacket(14 + 20 + 20);
+	allocate_header(new_packet, header);
+
+	sendPacket("IPv4", new_packet);
+
+	returnSystemCall(syscallUUID, 0);
+
+	delete header;
 }
 
 void TCPAssignment::syscall_bind(UUID syscallUUID, int pid, int sockfd, struct sockaddr *my_addr, socklen_t addrlen)
@@ -390,7 +430,7 @@ Socket* TCPAssignment::find_established(Socket* socket)
 
 	for (std::list<Socket*>::iterator it = socket->backlog_list.begin(); it != socket->backlog_list.end(); ++it)
 	{
-		if((*it)->state == ESTAB)
+		if((*it)->state >= ESTAB)
 		{
 			res_socket = &(**it);
 			socket->backlog_list.erase(it);
@@ -605,15 +645,134 @@ void TCPAssignment::packetArrived(std::string fromModule, Packet* packet)
 
 			break;
 		}
+
+		case ESTAB:
+		{
+			if (header->fin != 1)
+				break;
+			
+			Header *new_header = new Header();
+			new_header->dest_addr = header->src_addr;
+			new_header->dest_port = header->src_port;
+			new_header->src_addr = header->dest_addr;
+			new_header->src_port = header->src_port;
+			new_header->seq_num = socket->src_seq;
+			new_header->ack_num = header->seq_num + 1;
+			new_header->ack = 1;
+
+			Packet *my_packet = allocatePacket(14 + 20 + 20);
+			allocate_header(my_packet, new_header);
+
+			sendPacket("IPv4", my_packet);
+
+			socket->state = CLOSE_WAIT;
+			socket->ack_num = new_header->ack_num;
+
+			delete new_header;
+
+			break;
+		}
+
+		case FIN_WAIT_1:
+		{
+			if (header->ack != 1)
+				break;
+
+			if (header->ack_num == socket->src_seq + 1)
+			{
+				socket->src_seq = header->ack_num;
+				socket->state = FIN_WAIT_2;
+			}
+
+			break;
+		}
+
+		case FIN_WAIT_2:
+		{
+			if (header->fin != 1)
+				break;
+
+			Header *new_header = new Header();
+			new_header->dest_addr = header->src_addr;
+			new_header->dest_port = header->src_port;
+			new_header->src_addr = header->dest_addr;
+			new_header->src_port = header->dest_port;
+			new_header->seq_num = socket->src_seq;
+			new_header->ack_num = header->seq_num + 1;
+			new_header->ack = 1;
+
+			Packet *new_packet = allocatePacket(14 + 20 + 20);
+			allocate_header(new_packet, new_header);
+			
+			sendPacket("IPv4", new_packet);
+
+			socket->state = TIMED_WAIT;
+
+			wait_list.push_back(socket);
+
+			for (std::list<Socket*>::iterator it = socket_list.begin(); it != socket_list.end(); ++it)
+			{
+				if ((*it) == socket)
+				{
+					socket_list.erase(it);
+					break;
+				}
+			}
+
+			allocate_timer(2 * 100, socket);
+
+			delete new_header;
+
+			break;
+		}
+
+		case LAST_ACK:
+		{
+			if (header->ack != 1 || header->ack_num != socket->src_seq + 1)
+				break;
+
+			remove_socket(socket->pid, socket->fd);
+
+			break;
+		}
 	}	
 
 	freePacket(packet);
 	delete header;
 }
 
+struct timer_elem* TCPAssignment::allocate_timer(int time, Socket *socket)
+{
+	struct timer_elem *te = (struct timer_elem *) malloc(sizeof(struct timer_elem));
+	te->socket = socket;
+
+	UUID timerUUID = addTimer(te, TimeUtil::makeTime(time, TimeUtil::MSEC));
+
+	te->timerUUID = timerUUID;
+
+	timer_list.push_back(te);
+	return te;
+}
+
+
 void TCPAssignment::timerCallback(void* payload)
 {
+	struct timer_elem *te = (struct timer_elem *) payload;
 
+	cancelTimer(te->timerUUID);
+	free(te->socket->sa);
+	removeFileDescriptor(te->socket->pid, te->socket->fd);
+
+	for (std::list<Socket*>::iterator it = wait_list.begin(); it != wait_list.end(); ++it)
+	{
+		if ((*it) == te->socket)
+		{
+			wait_list.erase(it);
+			delete te->socket;
+			free(te);
+			return;
+		}
+	}
 }
 
 
